@@ -924,7 +924,7 @@ static COMMAND path_command;
 static COMMAND * find_on_path(wchar_t * name)
 {
     wchar_t * pathext;
-    size_t    varsize;
+    size_t    requiredSize;
     wchar_t * context = NULL;
     wchar_t * extension;
     COMMAND * result = NULL;
@@ -941,18 +941,23 @@ static COMMAND * find_on_path(wchar_t * name)
     }
     else {
         /* No extension - search using registered extensions. */
-        rc = _wdupenv_s(&pathext, &varsize, L"PATHEXT");
-        if (rc == 0) {
-            extension = wcstok_s(pathext, L";", &context);
-            while (extension) {
-                len = SearchPathW(NULL, name, extension, MSGSIZE, path_command.value, NULL);
-                if (len) {
-                    result = &path_command;
-                    break;
+        _wgetenv_s(&requiredSize, NULL, 0, L"PATHEXT");
+        if (requiredSize > 0) {
+            pathext = (wchar_t *)malloc(requiredSize * sizeof(wchar_t));
+            /* No extension - search using registered extensions. */
+            rc = _wgetenv_s(&requiredSize, pathext, requiredSize, L"PATHEXT");
+            if (rc == 0) {
+                extension = wcstok_s(pathext, L";", &context);
+                while (extension) {
+                    len = SearchPathW(NULL, name, extension, MSGSIZE, path_command.value, NULL);
+                    if (len) {
+                        result = &path_command;
+                        break;
+                    }
+                    extension = wcstok_s(NULL, L";", &context);
                 }
-                extension = wcstok_s(NULL, L";", &context);
+                free(pathext);
             }
-            free(pathext);
         }
     }
     return result;
@@ -1913,7 +1918,7 @@ process(int argc, wchar_t ** argv)
         if (_wfopen_s(&f, venv_cfg_path, L"r")) {
             error(RC_BAD_VENV_CFG, L"Cannot read '%ls'", venv_cfg_path);
         }
-        cb = fread_s(buffer, sizeof(buffer), sizeof(buffer[0]),
+        cb = fread(buffer, sizeof(buffer[0]),
                      sizeof(buffer) / sizeof(buffer[0]), f);
         fclose(f);
 
@@ -1926,7 +1931,8 @@ process(int argc, wchar_t ** argv)
         if (!cch) {
             error(0, L"Cannot determine memory for home path");
         }
-        cch += (DWORD)wcslen(PYTHON_EXECUTABLE) + 4; /* include sep, null and quotes */
+        cch += (DWORD)max(wcslen(PYTHON_EXECUTABLE_WITH_VERSION),
+                          wcslen(PYTHON_EXECUTABLE)) + 4; /* include sep, null and quotes */
         executable = (wchar_t *)malloc(cch * sizeof(wchar_t));
         if (executable == NULL) {
             error(RC_NO_MEMORY, L"A memory allocation failed");
@@ -1944,13 +1950,22 @@ process(int argc, wchar_t ** argv)
             executable[cch_actual++] = L'\\';
             executable[cch_actual] = L'\0';
         }
-        if (wcscat_s(&executable[1], cch - 1, PYTHON_EXECUTABLE)) {
+        if (wcscat_s(&executable[1], cch - 1, PYTHON_EXECUTABLE_WITH_VERSION)) {
             error(RC_BAD_VENV_CFG, L"Cannot create executable path from '%ls'",
                   venv_cfg_path);
         }
         /* there's no trailing quote, so we only have to skip one character for the test */
+        // Check if the versioned executable (PYTHON_EXECUTABLE_WITH_VERSION) exists first
         if (GetFileAttributesW(&executable[1]) == INVALID_FILE_ATTRIBUTES) {
-            error(RC_NO_PYTHON, L"No Python at '%ls'", executable);
+            // If not found, try PYTHON_EXECUTABLE
+            executable[cch_actual] = L'\0';  // Reset the path
+            if (wcscat_s(&executable[1], cch - 1, PYTHON_EXECUTABLE)) {
+                error(RC_BAD_VENV_CFG, L"Cannot create executable path from '%ls'",
+                      venv_cfg_path);
+            }
+            if (GetFileAttributesW(&executable[1]) == INVALID_FILE_ATTRIBUTES) {
+                error(RC_NO_PYTHON, L"No Python at '%ls'", executable);
+            }
         }
         /* now append the final quote */
         wcscat_s(executable, cch, L"\"");

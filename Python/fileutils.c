@@ -1,4 +1,5 @@
 #include "Python.h"
+#include "iscygpty.h"
 #include "pycore_fileutils.h"     // fileutils definitions
 #include "pycore_runtime.h"       // _PyRuntime
 #include "osdefs.h"               // SEP
@@ -80,7 +81,7 @@ _Py_device_encoding(int fd)
     int valid;
     Py_BEGIN_ALLOW_THREADS
     _Py_BEGIN_SUPPRESS_IPH
-    valid = isatty(fd);
+    valid = isatty(fd) || is_cygpty(fd);
     _Py_END_SUPPRESS_IPH
     Py_END_ALLOW_THREADS
     if (!valid)
@@ -1930,12 +1931,12 @@ _Py_write_impl(int fd, const void *buf, size_t count, int gil_held)
            depending on heap usage). */
         if (gil_held) {
             Py_BEGIN_ALLOW_THREADS
-            if (isatty(fd)) {
+            if (isatty(fd) || is_cygpty(fd)) {
                 count = 32767;
             }
             Py_END_ALLOW_THREADS
         } else {
-            if (isatty(fd)) {
+            if (isatty(fd) || is_cygpty(fd)) {
                 count = 32767;
             }
         }
@@ -2148,19 +2149,31 @@ int
 _Py_isabs(const wchar_t *path)
 {
 #ifdef MS_WINDOWS
+    // create a copy of path and replace all forward slashes with backslashes
+    // pathccskiproot does not handle forward slashes
+    wchar_t *path_copy = _wcsdup(path);
+    if (path_copy == NULL) {
+        return 0;
+    }
+    Py_NormalizeSepsPathcchW(path_copy);
+
     const wchar_t *tail;
-    HRESULT hr = PathCchSkipRoot(path, &tail);
-    if (FAILED(hr) || path == tail) {
+    HRESULT hr = PathCchSkipRoot(path_copy, &tail);
+    if (FAILED(hr) || path_copy == tail) {
+        free(path_copy);
         return 0;
     }
-    if (tail == &path[1] && (path[0] == SEP || path[0] == ALTSEP)) {
+    if (tail == &path_copy[1] && (path_copy[0] == SEP || path_copy[0] == ALTSEP)) {
         // Exclude paths with leading SEP
+        free(path_copy);
         return 0;
     }
-    if (tail == &path[2] && path[1] == L':') {
+    if (tail == &path_copy[2] && path_copy[1] == L':') {
         // Exclude drive-relative paths (e.g. C:filename.ext)
+        free(path_copy);
         return 0;
     }
+    free(path_copy);
     return 1;
 #else
     return (path[0] == SEP);
@@ -2193,7 +2206,11 @@ _Py_abspath(const wchar_t *path, wchar_t **abspath_p)
     }
 
 #ifdef MS_WINDOWS
-    return _PyOS_getfullpathname(path, abspath_p);
+    if (_PyOS_getfullpathname(path, abspath_p) < 0){
+        return -1;
+    }
+    *abspath_p = _Py_normpath(*abspath_p, -1);
+    return 0;
 #else
     wchar_t cwd[MAXPATHLEN + 1];
     cwd[Py_ARRAY_LENGTH(cwd) - 1] = 0;
@@ -2396,6 +2413,8 @@ join_relfile(wchar_t *buffer, size_t bufsize,
              const wchar_t *dirname, const wchar_t *relfile)
 {
 #ifdef MS_WINDOWS
+    Py_NormalizeSepsPathcchW(dirname);
+    Py_NormalizeSepsPathcchW(relfile);
     if (FAILED(PathCchCombineEx(buffer, bufsize, dirname, relfile,
         PATHCCH_ALLOW_LONG_PATHS))) {
         return -1;
@@ -2498,11 +2517,16 @@ _Py_normpath_and_size(wchar_t *path, Py_ssize_t size, Py_ssize_t *normsize)
     wchar_t *minP2 = path;  // the beginning of the destination range
     wchar_t lastC = L'\0';  // the last ljusted character, p2[-1] in most cases
 
+    const wchar_t sep = Py_GetSepW(NULL);
+#ifdef ALTSEP
+    const wchar_t altsep = Py_GetAltSepW(NULL);
+#endif
+
 #define IS_END(x) (pEnd ? (x) == pEnd : !*(x))
 #ifdef ALTSEP
-#define IS_SEP(x) (*(x) == SEP || *(x) == ALTSEP)
+#define IS_SEP(x) (*(x) == sep || *(x) == altsep)
 #else
-#define IS_SEP(x) (*(x) == SEP)
+#define IS_SEP(x) (*(x) == sep)
 #endif
 #define SEP_OR_END(x) (IS_SEP(x) || IS_END(x))
 
@@ -2515,15 +2539,15 @@ _Py_normpath_and_size(wchar_t *path, Py_ssize_t size, Py_ssize_t *normsize)
         p2 = p1;
 #else
         for (; p2 < p1; ++p2) {
-            if (*p2 == ALTSEP) {
-                *p2 = SEP;
+            if (*p2 == altsep) {
+                *p2 = sep;
             }
         }
 #endif
         minP2 = p2 - 1;
         lastC = *minP2;
 #ifdef MS_WINDOWS
-        if (lastC != SEP) {
+        if (lastC != sep) {
             minP2++;
         }
 #endif
@@ -2532,8 +2556,8 @@ _Py_normpath_and_size(wchar_t *path, Py_ssize_t size, Py_ssize_t *normsize)
         // Skip leading '.\'
         lastC = *++p1;
 #ifdef ALTSEP
-        if (lastC == ALTSEP) {
-            lastC = SEP;
+        if (lastC == altsep) {
+            lastC = sep;
         }
 #endif
         while (IS_SEP(p1)) {
@@ -2545,18 +2569,18 @@ _Py_normpath_and_size(wchar_t *path, Py_ssize_t size, Py_ssize_t *normsize)
     for (; !IS_END(p1); ++p1) {
         wchar_t c = *p1;
 #ifdef ALTSEP
-        if (c == ALTSEP) {
-            c = SEP;
+        if (c == altsep) {
+            c = sep;
         }
 #endif
-        if (lastC == SEP) {
+        if (lastC == sep) {
             if (c == L'.') {
                 int sep_at_1 = SEP_OR_END(&p1[1]);
                 int sep_at_2 = !sep_at_1 && SEP_OR_END(&p1[2]);
                 if (sep_at_2 && p1[1] == L'.') {
                     wchar_t *p3 = p2;
-                    while (p3 != minP2 && *--p3 == SEP) { }
-                    while (p3 != minP2 && *(p3 - 1) != SEP) { --p3; }
+                    while (p3 != minP2 && *--p3 == sep) { }
+                    while (p3 != minP2 && *(p3 - 1) != sep) { --p3; }
                     if (p2 == minP2
                         || (p3[0] == L'.' && p3[1] == L'.' && IS_SEP(&p3[2])))
                     {
@@ -2565,7 +2589,7 @@ _Py_normpath_and_size(wchar_t *path, Py_ssize_t size, Py_ssize_t *normsize)
                         *p2++ = L'.';
                         *p2++ = L'.';
                         lastC = L'.';
-                    } else if (p3[0] == SEP) {
+                    } else if (p3[0] == sep) {
                         // Absolute path, so absorb segment
                         p2 = p3 + 1;
                     } else {
@@ -2576,7 +2600,7 @@ _Py_normpath_and_size(wchar_t *path, Py_ssize_t size, Py_ssize_t *normsize)
                 } else {
                     *p2++ = lastC = c;
                 }
-            } else if (c == SEP) {
+            } else if (c == sep) {
             } else {
                 *p2++ = lastC = c;
             }
@@ -2586,7 +2610,7 @@ _Py_normpath_and_size(wchar_t *path, Py_ssize_t size, Py_ssize_t *normsize)
     }
     *p2 = L'\0';
     if (p2 != minP2) {
-        while (--p2 != minP2 && *p2 == SEP) {
+        while (--p2 != minP2 && *p2 == sep) {
             *p2 = L'\0';
         }
     } else {

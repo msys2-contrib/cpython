@@ -582,7 +582,7 @@ calculate_log2_keysize(Py_ssize_t minsize)
 #if SIZEOF_LONG == SIZEOF_SIZE_T
     minsize = (minsize | PyDict_MINSIZE) - 1;
     return _Py_bit_length(minsize | (PyDict_MINSIZE-1));
-#elif defined(_MSC_VER)
+#elif defined(MS_WINDOWS)
     // On 64bit Windows, sizeof(long) == 4.
     minsize = (minsize | PyDict_MINSIZE) - 1;
     unsigned long msb;

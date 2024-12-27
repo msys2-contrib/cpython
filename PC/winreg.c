@@ -18,6 +18,25 @@
 
 #include <windows.h>
 
+#ifndef SIZEOF_HKEY
+/* used only here */
+#if defined(MS_WIN64)
+#  define SIZEOF_HKEY 8
+#elif defined(MS_WIN32)
+#  define SIZEOF_HKEY 4
+#else
+#  error "SIZEOF_HKEY is not defined"
+#endif
+#endif
+
+#ifndef REG_LEGAL_CHANGE_FILTER
+#define REG_LEGAL_CHANGE_FILTER        (\
+          REG_NOTIFY_CHANGE_NAME       |\
+          REG_NOTIFY_CHANGE_ATTRIBUTES |\
+          REG_NOTIFY_CHANGE_LAST_SET   |\
+          REG_NOTIFY_CHANGE_SECURITY   )
+#endif
+
 #if defined(MS_WINDOWS_DESKTOP) || defined(MS_WINDOWS_SYSTEM) || defined(MS_WINDOWS_GAMES)
 
 typedef struct {
@@ -816,6 +835,7 @@ Reg2Py(BYTE *retDataBuf, DWORD retDataSize, DWORD typ)
         case REG_BINARY:
         /* ALSO handle ALL unknown data types here.  Even if we can't
            support it natively, we should handle the bits. */
+           /* fallthrough */
         default:
             if (retDataSize == 0) {
                 obData = Py_NewRef(Py_None);

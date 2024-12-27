@@ -4,6 +4,7 @@
 #include "Python.h"
 #include "pycore_fileutils.h"     // _Py_add_relfile()
 #include "pycore_pystate.h"       // _PyInterpreterState_GET()
+#include "pycore_initconfig.h"
 
 #include "pycore_importdl.h"      // dl_funcptr
 #include "patchlevel.h"           // PY_MAJOR_VERSION
@@ -35,6 +36,16 @@ const char *_PyImport_DynLoadFiletab[] = {
 
 #define DWORD_AT(mem) (*(DWORD *)(mem))
 #define WORD_AT(mem)  (*(WORD *)(mem))
+
+#ifdef __MINGW32__
+#define DLL_PREFIX "libpython"
+#define DLL_PREFIX_LEN 9
+#define DLL_NAME_FORMAT "libpython%d.%d"
+#else
+#define DLL_PREFIX "python"
+#define DLL_PREFIX_LEN 6
+#define DLL_NAME_FORMAT "python%d%d"
+#endif
 
 static char *GetPythonImport (HINSTANCE hModule)
 {
@@ -102,15 +113,15 @@ static char *GetPythonImport (HINSTANCE hModule)
                                          import_off);
         while (DWORD_AT(import_data)) {
             import_name = dllbase + DWORD_AT(import_data+12);
-            if (strlen(import_name) >= 6 &&
-                !strncmp(import_name,"python",6)) {
+            if (strlen(import_name) >= DLL_PREFIX_LEN &&
+                !strncmp(import_name, DLL_PREFIX, DLL_PREFIX_LEN)) {
                 char *pch;
 
                 /* Don't claim that python3.dll is a Python DLL. */
 #ifdef _DEBUG
-                if (strcmp(import_name, "python3_d.dll") == 0) {
+                if (strcmp(import_name, DLL_PREFIX "3_d.dll") == 0) {
 #else
-                if (strcmp(import_name, "python3.dll") == 0) {
+                if (strcmp(import_name, DLL_PREFIX "3.dll") == 0) {
 #endif
                     import_data += 20;
                     continue;
@@ -118,7 +129,7 @@ static char *GetPythonImport (HINSTANCE hModule)
 
                 /* Ensure python prefix is followed only
                    by numbers to the end of the basename */
-                pch = import_name + 6;
+                pch = import_name + DLL_PREFIX_LEN;
 #ifdef _DEBUG
                 while (*pch && pch[0] != '_' && pch[1] != 'd' && pch[2] != '.') {
 #else
@@ -152,8 +163,7 @@ static char *GetPythonImport (HINSTANCE hModule)
    Return whether the DLL was found.
 */
 extern HMODULE PyWin_DLLhModule;
-static int
-_Py_CheckPython3(void)
+int _Py_CheckPython3(void)
 {
     static int python3_checked = 0;
     static HANDLE hPython3;
@@ -207,13 +217,37 @@ dl_funcptr _PyImport_FindSharedFuncptrWindows(const char *prefix,
     dl_funcptr p;
     char funcname[258], *import_python;
 
-#ifdef Py_ENABLE_SHARED
-    _Py_CheckPython3();
-#endif /* Py_ENABLE_SHARED */
+    int use_legacy = 0;
+    DWORD load_library_flags = 0;
+
+    _Py_get_env_flag(1, &use_legacy, "PYTHONLEGACYWINDOWSDLLLOADING");
+
+    if (use_legacy) {
+        load_library_flags = LOAD_WITH_ALTERED_SEARCH_PATH;
+    } else {
+        load_library_flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
+                              LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR;
+    }
+
+#ifdef _MSC_VER
+    _Py_CheckPython3(); 
+#endif /* _MSC_VER */
+
+// So we can adjust the separators in the path below
+#define USE_UNICODE_WCHAR_CACHE 0
 
     wchar_t *wpathname = PyUnicode_AsWideCharString(pathname, NULL);
     if (wpathname == NULL)
         return NULL;
+
+    // LoadLibraryExW only considers paths using backslashes as "fully qualified",
+    // and for example LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR doesn't work with forward slashes.
+    // https://github.com/msys2-contrib/cpython-mingw/issues/151
+    for (size_t i = 0; wpathname[i] != L'\0'; ++i) {
+        if (wpathname[i] == L'/') {
+            wpathname[i] = L'\\';
+        }
+    }
 
     PyOS_snprintf(funcname, sizeof(funcname), "%.20s_%.200s", prefix, shortname);
 
@@ -231,9 +265,7 @@ dl_funcptr _PyImport_FindSharedFuncptrWindows(const char *prefix,
            AddDllDirectory function. We add SEARCH_DLL_LOAD_DIR to
            ensure DLLs adjacent to the PYD are preferred. */
         Py_BEGIN_ALLOW_THREADS
-        hDLL = LoadLibraryExW(wpathname, NULL,
-                              LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
-                              LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+        hDLL = LoadLibraryExW(wpathname, NULL, load_library_flags);
         Py_END_ALLOW_THREADS
         PyMem_Free(wpathname);
 
@@ -300,9 +332,9 @@ dl_funcptr _PyImport_FindSharedFuncptrWindows(const char *prefix,
 
             PyOS_snprintf(buffer, sizeof(buffer),
 #ifdef _DEBUG
-                          "python%d%d_d.dll",
+                          DLL_NAME_FORMAT "_d.dll",
 #else
-                          "python%d%d.dll",
+                          DLL_NAME_FORMAT ".dll",
 #endif
                           PY_MAJOR_VERSION,PY_MINOR_VERSION);
             import_python = GetPythonImport(hDLL);

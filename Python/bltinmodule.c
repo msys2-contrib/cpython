@@ -16,6 +16,8 @@
 
 #include "clinic/bltinmodule.c.h"
 
+#include "iscygpty.h"
+
 #ifdef HAVE_UNISTD_H
 #  include <unistd.h>             // isatty()
 #endif
@@ -2202,7 +2204,7 @@ builtin_input_impl(PyObject *module, PyObject *prompt)
         Py_DECREF(tmp);
         if (fd < 0 && PyErr_Occurred())
             return NULL;
-        tty = fd == fileno(stdin) && isatty(fd);
+        tty = fd == fileno(stdin) && (isatty(fd) || is_cygpty(fd));
     }
     if (tty) {
         tmp = PyObject_CallMethodNoArgs(fout, &_Py_ID(fileno));
@@ -2215,7 +2217,7 @@ builtin_input_impl(PyObject *module, PyObject *prompt)
             Py_DECREF(tmp);
             if (fd < 0 && PyErr_Occurred())
                 return NULL;
-            tty = fd == fileno(stdout) && isatty(fd);
+            tty = fd == fileno(stdout) && (isatty(fd) || is_cygpty(fd));
         }
     }
 

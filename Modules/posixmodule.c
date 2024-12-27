@@ -67,6 +67,7 @@
 #ifdef __ANDROID__
 #  undef HAVE_FACCESSAT
 #endif
+#include "iscygpty.h"
 
 #include <stdio.h>                // ctermid()
 #include <stdlib.h>               // system()
@@ -390,6 +391,32 @@ corresponding Unix manual entries for more information on calls.");
 #  define HAVE_PIPE       1
 #  define HAVE_FSYNC      1
 #  define fsync _commit
+#elif defined(__MINGW32__)	/* GCC for windows hosts */
+/* getlogin is detected by configure on mingw-w64 */
+#  undef HAVE_GETLOGIN
+/* opendir is detected by configure on mingw-w64, and for some reason
+things don't work as expected. For example, os.listdir always returns
+the cwd's directory listing instead of the one specified. By 
+un-defining, this, os.listdir will use the one which uses native
+windows API. */
+#  undef HAVE_OPENDIR
+/*#    define HAVE_GETCWD     1 - detected by configure*/
+#  define HAVE_GETPPID    1
+#  define HAVE_GETLOGIN   1
+#  define HAVE_SPAWNV     1
+#  define HAVE_WSPAWNV    1
+#  define HAVE_WEXECV     1
+/*#    define HAVE_EXECV	     1 - detected by configure*/
+#  define HAVE_PIPE	     1
+#  define HAVE_POPEN	     1
+#  define HAVE_SYSTEM	   1
+#  define HAVE_CWAIT      1
+#  define HAVE_FSYNC      1
+#  define fsync _commit
+#  include <winioctl.h>
+#  ifndef _MAX_ENV
+#    define _MAX_ENV	32767
+#  endif
 #endif  /* ! __WATCOMC__ || __QNX__ */
 
 /*[clinic input]
@@ -467,7 +494,7 @@ extern char        *ctermid_r(char *);
 #  endif
 #endif
 
-#ifdef _MSC_VER
+#ifdef MS_WINDOWS
 #  ifdef HAVE_DIRECT_H
 #    include <direct.h>
 #  endif
@@ -478,7 +505,7 @@ extern char        *ctermid_r(char *);
 #    include <process.h>
 #  endif
 #  include <malloc.h>
-#endif /* _MSC_VER */
+#endif /* MS_WINDOWS */
 
 #ifndef MAXPATHLEN
 #  if defined(PATH_MAX) && PATH_MAX > 1024
@@ -1650,9 +1677,9 @@ error:
 */
 #include <crt_externs.h>
 #define USE_DARWIN_NS_GET_ENVIRON 1
-#elif !defined(_MSC_VER) && (!defined(__WATCOMC__) || defined(__QNX__) || defined(__VXWORKS__))
+#elif !defined(MS_WINDOWS) && (!defined(__WATCOMC__) || defined(__QNX__) || defined(__VXWORKS__))
 extern char **environ;
-#endif /* !_MSC_VER */
+#endif /* !MS_WINDOWS */
 
 static PyObject *
 convertenviron(void)
@@ -4121,6 +4148,7 @@ posix_getcwd(int use_bytes)
         return NULL;
     }
 
+    Py_NormalizeSepsW(wbuf2);
     PyObject *resobj = PyUnicode_FromWideChar(wbuf2, len);
     if (wbuf2 != wbuf) {
         PyMem_RawFree(wbuf2);
@@ -5021,6 +5049,7 @@ os__getfinalpathname_impl(PyObject *module, path_t *path)
         target_path = tmp;
     }
 
+    Py_NormalizeSepsW(target_path);
     result = PyUnicode_FromWideChar(target_path, result_length);
     if (result && PyBytes_Check(path->object)) {
         Py_SETREF(result, PyUnicode_EncodeFSDefault(result));
@@ -6526,7 +6555,7 @@ os_utime_impl(PyObject *module, path_t *path, PyObject *times, PyObject *ns,
 /*[clinic end generated code: output=cfcac69d027b82cf input=2fbd62a2f228f8f4]*/
 {
 #ifdef MS_WINDOWS
-    HANDLE hFile;
+    HANDLE hFile = 0;
     FILETIME atime, mtime;
 #else
     int result;
@@ -9301,7 +9330,7 @@ os_setpgrp_impl(PyObject *module)
 
 #ifdef MS_WINDOWS
 #include <winternl.h>
-#include <ProcessSnapshot.h>
+#include <processsnapshot.h>
 
 // The structure definition in winternl.h may be incomplete.
 // This structure is the full version from the MSDN documentation.
@@ -11999,7 +12028,7 @@ os_isatty_impl(PyObject *module, int fd)
     int return_value;
     Py_BEGIN_ALLOW_THREADS
     _Py_BEGIN_SUPPRESS_IPH
-    return_value = isatty(fd);
+    return_value = isatty(fd) || is_cygpty(fd);
     _Py_END_SUPPRESS_IPH
     Py_END_ALLOW_THREADS
     return return_value;

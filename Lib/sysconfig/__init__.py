@@ -49,13 +49,13 @@ _INSTALL_SCHEMES = {
         'data': '{base}',
         },
     'nt': {
-        'stdlib': '{installed_base}/Lib',
-        'platstdlib': '{base}/Lib',
-        'purelib': '{base}/Lib/site-packages',
-        'platlib': '{base}/Lib/site-packages',
-        'include': '{installed_base}/Include',
-        'platinclude': '{installed_base}/Include',
-        'scripts': '{base}/Scripts',
+        'stdlib': '{installed_base}/lib/{implementation_lower}{py_version_short}{abi_thread}',
+        'platstdlib': '{base}/lib/{implementation_lower}{py_version_short}{abi_thread}',
+        'purelib': '{base}/lib/{implementation_lower}{py_version_short}{abi_thread}/site-packages',
+        'platlib': '{base}/lib/{implementation_lower}{py_version_short}{abi_thread}/site-packages',
+        'include': '{installed_base}/include/{implementation_lower}{py_version_short}{abiflags}',
+        'platinclude': '{installed_base}/include/{implementation_lower}{py_version_short}{abiflags}',
+        'scripts': '{base}/bin',
         'data': '{base}',
         },
 
@@ -100,14 +100,19 @@ _INSTALL_SCHEMES = {
         },
     }
 
+# GCC[mingw*] use posix build system
+_POSIX_BUILD = os.name == 'posix' or \
+    (os.name == "nt" and 'GCC' in sys.version)
+
 # For the OS-native venv scheme, we essentially provide an alias:
-if os.name == 'nt':
+if os.name == 'nt' and not _POSIX_BUILD:
     _INSTALL_SCHEMES['venv'] = _INSTALL_SCHEMES['nt_venv']
 else:
     _INSTALL_SCHEMES['venv'] = _INSTALL_SCHEMES['posix_venv']
 
 def _get_implementation():
     return 'Python'
+
 
 # NOTE: site.py has copy of this function.
 # Sync it when modify this function.
@@ -123,7 +128,7 @@ def _getuserbase():
     def joinuser(*args):
         return os.path.expanduser(os.path.join(*args))
 
-    if os.name == "nt":
+    if os.name == "nt" and not _POSIX_BUILD:
         base = os.environ.get("APPDATA") or "~"
         return joinuser(base,  _get_implementation())
 
@@ -139,20 +144,20 @@ if _HAS_USER_BASE:
     _INSTALL_SCHEMES |= {
         # NOTE: When modifying "purelib" scheme, update site._get_path() too.
         'nt_user': {
-            'stdlib': '{userbase}/{implementation}{py_version_nodot_plat}',
-            'platstdlib': '{userbase}/{implementation}{py_version_nodot_plat}',
-            'purelib': '{userbase}/{implementation}{py_version_nodot_plat}/site-packages',
-            'platlib': '{userbase}/{implementation}{py_version_nodot_plat}/site-packages',
-            'include': '{userbase}/{implementation}{py_version_nodot_plat}/Include',
-            'scripts': '{userbase}/{implementation}{py_version_nodot_plat}/Scripts',
+            'stdlib': '{userbase}/lib/{implementation}{py_version_short_plat}{abi_thread}',
+            'platstdlib': '{userbase}/lib/{implementation}{py_version_short_plat}{abi_thread}',
+            'purelib': '{userbase}/lib/{implementation}{py_version_short_plat}{abi_thread}/site-packages',
+            'platlib': '{userbase}/lib/{implementation}{py_version_short_plat}{abi_thread}/site-packages',
+            'include': '{userbase}/include/{implementation}{py_version_short_plat}{abi_thread}',
+            'scripts': '{userbase}/bin',
             'data': '{userbase}',
             },
         'posix_user': {
-            'stdlib': '{userbase}/{platlibdir}/{implementation_lower}{py_version_short}{abi_thread}',
-            'platstdlib': '{userbase}/{platlibdir}/{implementation_lower}{py_version_short}{abi_thread}',
-            'purelib': '{userbase}/lib/{implementation_lower}{py_version_short}{abi_thread}/site-packages',
-            'platlib': '{userbase}/lib/{implementation_lower}{py_version_short}{abi_thread}/site-packages',
-            'include': '{userbase}/include/{implementation_lower}{py_version_short}{abi_thread}',
+            'stdlib': '{userbase}/{platlibdir}/{implementation_lower}{py_version_short_plat}{abi_thread}',
+            'platstdlib': '{userbase}/{platlibdir}/{implementation_lower}{py_version_short_plat}{abi_thread}',
+            'purelib': '{userbase}/lib/{implementation_lower}{py_version_short_plat}{abi_thread}/site-packages',
+            'platlib': '{userbase}/lib/{implementation_lower}{py_version_short_plat}{abi_thread}/site-packages',
+            'include': '{userbase}/include/{implementation_lower}{py_version_short_plat}{abi_thread}',
             'scripts': '{userbase}/bin',
             'data': '{userbase}',
             },
@@ -278,7 +283,7 @@ def _expand_vars(scheme, vars):
 
 
 def _get_preferred_schemes():
-    if os.name == 'nt':
+    if os.name == 'nt' and not _POSIX_BUILD:
         return {
             'prefix': 'nt',
             'home': 'posix_home',
@@ -373,7 +378,7 @@ def _init_non_posix(vars):
         vars['LIBRARY'] = os.path.basename(_safe_realpath(dllhandle))
         vars['LDLIBRARY'] = vars['LIBRARY']
     vars['EXE'] = '.exe'
-    vars['VERSION'] = _PY_VERSION_SHORT_NO_DOT
+    vars['VERSION'] = _PY_VERSION_SHORT
     vars['BINDIR'] = os.path.dirname(_safe_realpath(sys.executable))
     vars['TZPATH'] = ''
 
@@ -419,7 +424,7 @@ def parse_config_h(fp, vars=None):
 def get_config_h_filename():
     """Return the path of pyconfig.h."""
     if _PYTHON_BUILD:
-        if os.name == "nt":
+        if os.name == "nt" and not _POSIX_BUILD:
             inc_dir = os.path.dirname(sys._base_executable)
         else:
             inc_dir = _PROJECT_BASE
@@ -488,11 +493,15 @@ def _init_config_vars():
         _CONFIG_VARS['py_version_nodot_plat'] = sys.winver.replace('.', '')
     except AttributeError:
         _CONFIG_VARS['py_version_nodot_plat'] = ''
+    if os.name == 'nt' and _POSIX_BUILD:
+        _CONFIG_VARS['py_version_short_plat'] = f'{_PY_VERSION_SHORT}-{get_platform()}'
+    else:
+        _CONFIG_VARS['py_version_short_plat'] = _PY_VERSION_SHORT
 
-    if os.name == 'nt':
+    if os.name == 'nt' and not _POSIX_BUILD:
         _init_non_posix(_CONFIG_VARS)
         _CONFIG_VARS['VPATH'] = sys._vpath
-    if os.name == 'posix':
+    if _POSIX_BUILD:
         _init_posix(_CONFIG_VARS)
     if _HAS_USER_BASE:
         # Setting 'userbase' is done below the call to the
@@ -505,7 +514,7 @@ def _init_config_vars():
 
     # Always convert srcdir to an absolute path
     srcdir = _CONFIG_VARS.get('srcdir', _PROJECT_BASE)
-    if os.name == 'posix':
+    if _POSIX_BUILD:
         if _PYTHON_BUILD:
             # If srcdir is a relative path (typically '.' or '..')
             # then it should be interpreted relative to the directory
@@ -578,7 +587,7 @@ def get_config_var(name):
     """
     return get_config_vars().get(name)
 
-
+# make sure to change site._get_platform() while changing this function
 def get_platform():
     """Return a string that identifies the current platform.
 
@@ -601,6 +610,28 @@ def get_platform():
 
     """
     if os.name == 'nt':
+        if 'gcc' in sys.version.lower():
+            platform = 'mingw'
+            if 'amd64' in sys.version.lower():
+                platform += '_x86_64'
+            elif 'arm64' in sys.version.lower():
+                platform += '_aarch64'
+            elif 'arm' in sys.version.lower():
+                platform += '_armv7'
+            else:
+                platform += '_i686'
+
+            if 'ucrt' in sys.version.lower():
+                platform += '_ucrt'
+            else:
+                platform += "_msvcrt"
+
+            if 'clang' in sys.version.lower():
+                platform += "_llvm"
+            else:
+                platform += "_gnu"
+            
+            return platform
         if 'amd64' in sys.version.lower():
             return 'win-amd64'
         if '(arm)' in sys.version.lower():

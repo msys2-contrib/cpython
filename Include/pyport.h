@@ -49,6 +49,44 @@
 #endif
 
 
+#ifdef __MINGW32__
+/* Translate GCC[mingw*] platform specific defines to those
+ * used in python code.
+ */
+#if !defined(MS_WIN64) && defined(_WIN64)
+#  define MS_WIN64
+#endif
+#if !defined(MS_WIN32) && defined(_WIN32)
+#  define MS_WIN32
+#endif
+#if !defined(MS_WINDOWS) && defined(MS_WIN32)
+#  define MS_WINDOWS
+#endif
+
+#if defined(Py_BUILD_CORE) || defined(Py_BUILD_CORE_BUILTIN) || defined(Py_BUILD_CORE_MODULE)
+#include <winapifamily.h>
+
+#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
+#define MS_WINDOWS_DESKTOP
+#endif
+#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP)
+#define MS_WINDOWS_APP
+#endif
+#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_SYSTEM)
+#define MS_WINDOWS_SYSTEM
+#endif
+#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_GAMES)
+#define MS_WINDOWS_GAMES
+#endif
+
+/* Define to 1 if you support windows console io */
+#if defined(MS_WINDOWS_DESKTOP) || defined(MS_WINDOWS_APP) || defined(MS_WINDOWS_SYSTEM)
+#define HAVE_WINDOWS_CONSOLE_IO 1
+#endif
+#endif /* Py_BUILD_CORE || Py_BUILD_CORE_BUILTIN || Py_BUILD_CORE_MODULE */
+
+#endif /* __MINGW32__*/
+
 /**************************************************************************
 Symbols and macros to supply platform-independent interfaces to basic
 C language & library operations whose spellings vary across platforms.
@@ -438,6 +476,12 @@ extern "C" {
 #endif
 
 #define Py_VA_COPY va_copy
+
+#if defined(__GNUC__) && ((__GNUC__ == 4 && __GNUC_MINOR__>= 4) || __GNUC__ > 4)
+#  define Py_PRINTF(X,Y) Py_GCC_ATTRIBUTE((format(gnu_printf,X,Y)))
+#else
+#  define Py_PRINTF(X,Y) Py_GCC_ATTRIBUTE((format(printf,X,Y))) 
+#endif
 
 /*
  * Convenient macros to deal with endianness of the platform. WORDS_BIGENDIAN is

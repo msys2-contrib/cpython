@@ -89,6 +89,12 @@ USER_SITE = None
 USER_BASE = None
 
 
+# Same as defined in Lib/sysconfig.py
+# redeclared since sysconfig is large for site.
+# GCC[mingw*] use posix build system
+_POSIX_BUILD = os.name == 'posix' or \
+    (os.name == "nt" and 'GCC' in sys.version)
+
 def _trace(message):
     if sys.flags.verbose:
         print(message, file=sys.stderr)
@@ -298,7 +304,7 @@ def _getuserbase():
     def joinuser(*args):
         return os.path.expanduser(os.path.join(*args))
 
-    if os.name == "nt":
+    if os.name == "nt" and not _POSIX_BUILD:
         base = os.environ.get("APPDATA") or "~"
         return joinuser(base, _get_implementation())
 
@@ -308,6 +314,32 @@ def _getuserbase():
 
     return joinuser("~", ".local")
 
+# Copy of sysconfig.get_platform() but only for MinGW
+def _get_platform():
+    if os.name == 'nt':
+        if 'gcc' in sys.version.lower():
+            platform = 'mingw'
+            if 'amd64' in sys.version.lower():
+                platform += '_x86_64'
+            elif 'arm64' in sys.version.lower():
+                platform += '_aarch64'
+            elif 'arm' in sys.version.lower():
+                platform += '_armv7'
+            else:
+                platform += '_i686'
+
+            if 'ucrt' in sys.version.lower():
+                platform += '_ucrt'
+            else:
+                platform += "_msvcrt"
+
+            if 'clang' in sys.version.lower():
+                platform += "_llvm"
+            else:
+                platform += "_gnu"
+            
+            return platform
+    return sys.platform
 
 # Same to sysconfig.get_path('purelib', os.name+'_user')
 def _get_path(userbase):
@@ -320,8 +352,10 @@ def _get_path(userbase):
     implementation = _get_implementation()
     implementation_lower = implementation.lower()
     if os.name == 'nt':
-        ver_nodot = sys.winver.replace('.', '')
-        return f'{userbase}\\{implementation}{ver_nodot}\\site-packages'
+        if not _POSIX_BUILD:
+            ver_nodot = sys.winver.replace('.', '')
+            return f'{userbase}\\{implementation}{ver_nodot}\\site-packages'
+        return f'{userbase}/lib/{implementation_lower}{version[0]}.{version[1]}-{_get_platform()}{abi_thread}/site-packages'
 
     if sys.platform == 'darwin' and sys._framework:
         return f'{userbase}/lib/{implementation_lower}/site-packages'
@@ -398,7 +432,7 @@ def getsitepackages(prefixes=None):
             abi_thread = 't'
         else:
             abi_thread = ''
-        if os.sep == '/':
+        if _POSIX_BUILD:
             libdirs = [sys.platlibdir]
             if sys.platlibdir != "lib":
                 libdirs.append("lib")
@@ -429,7 +463,7 @@ def setquit():
     The repr of each object contains a hint at how it works.
 
     """
-    if os.sep == '\\':
+    if sys.platform == 'win32':
         eof = 'Ctrl-Z plus Return'
     else:
         eof = 'Ctrl-D (i.e. EOF)'

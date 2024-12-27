@@ -11,6 +11,12 @@ extern "C" {
 #include "dynamic_annotations.h" // _Py_ANNOTATE_PURE_HAPPENS_BEFORE_MUTEX
 #include "pycore_llist.h"        // struct llist_node
 
+#ifdef __MINGW32__
+#  if !defined(HAVE_PTHREAD_H) || defined(NT_THREADS)
+#    undef _POSIX_THREADS
+#  endif
+#endif
+
 // Get _POSIX_THREADS and _POSIX_SEMAPHORES macros if available
 #if (defined(HAVE_UNISTD_H) && !defined(_POSIX_THREADS) \
                             && !defined(_POSIX_SEMAPHORES))

@@ -12,7 +12,7 @@ dnl
 # Set VERSION so we only need to edit in one place (i.e., here)
 m4_define([PYTHON_VERSION], [3.13])
 
-AC_PREREQ([2.71])
+AC_PREREQ([2.69])
 
 AC_INIT([python],[PYTHON_VERSION],[https://github.com/python/cpython/issues/])
 
@@ -204,9 +204,11 @@ AC_SUBST([FREEZE_MODULE])
 AC_SUBST([FREEZE_MODULE_DEPS])
 AC_SUBST([PYTHON_FOR_BUILD_DEPS])
 
+NATIVE_PYTHON_SEARCH_PATH_MINGW=`echo $host | grep -Eq 'mingw*' && echo "$MINGW_PREFIX/bin" || echo $PATH`
 AC_CHECK_PROGS([PYTHON_FOR_REGEN],
   [python$PACKAGE_VERSION python3.13 python3.12 python3.11 python3.10 python3 python],
-  [python3])
+  [python3],
+  [$NATIVE_PYTHON_SEARCH_PATH_MINGW])
 AC_SUBST([PYTHON_FOR_REGEN])
 
 AC_MSG_CHECKING([Python for regen version])
@@ -327,6 +329,9 @@ then
 	*-*-cygwin*)
 		ac_sys_system=Cygwin
 		;;
+	*-*-mingw*)
+		ac_sys_system=MINGW
+		;;
 	*-apple-ios*)
 		ac_sys_system=iOS
 		;;
@@ -366,6 +371,7 @@ then
 	linux*) MACHDEP="linux";;
 	cygwin*) MACHDEP="cygwin";;
 	darwin*) MACHDEP="darwin";;
+  mingw*) MACHDEP="win32";;
 	'')	MACHDEP="unknown";;
     esac
 
@@ -776,6 +782,9 @@ if test "$cross_compiling" = yes; then
 		;;
 	wasm32-*-* | wasm64-*-*)
 		_host_ident=$host_cpu
+    ;;
+	*-*-mingw*)
+		_host_ident=
 		;;
 	*)
 		# for now, limit cross builds to known configurations
@@ -783,6 +792,14 @@ if test "$cross_compiling" = yes; then
 		AC_MSG_ERROR([cross build not supported for $host])
 	esac
 	_PYTHON_HOST_PLATFORM="$MACHDEP${_host_ident:+-$_host_ident}"
+
+	case "$host_os" in
+    mingw*)
+    # As sys.platform() return 'win32' to build python and extantions
+    # we will use 'mingw' (in setup.py and etc.)
+    _PYTHON_HOST_PLATFORM=mingw
+    ;;
+	esac
 fi
 
 # Some systems cannot stand _XOPEN_SOURCE being defined at all; they
@@ -900,6 +917,65 @@ then
   AC_DEFINE([_INCLUDE__STDC_A1_SOURCE], [1],
             [Define to include mbstate_t for mbrtowc])
 fi
+
+# On 'semi-native' build systems (MSYS*/Cygwin targeting MinGW-w64)
+# _sysconfigdata.py will contain paths that are correct only in the
+# build environment. This means external modules will fail to build
+# without setting up the same env and also that the build of Python
+# itself will fail as the paths are not correct for the host tools.
+#
+# To work around these issues a set of _b2h variables are created:
+# prefix_b2h, srcdir_b2h, abs_srcdir_b2h
+# and abs_builddir_b2h
+# .. where b2h stands for build to host. sysconfig.py replaces path
+# prefixes matching the non-b2h versions with the b2h equivalents.
+#
+# (note this assumes the host compilers are native and *not* cross
+#  - in the 'semi-native' scenario only that is.)
+
+AC_DEFUN([ABS_PATH_HOST],
+[$1=$(cd $$2 && pwd)
+  case $build_os in
+    mingw*)
+      case $host_os in
+        mingw*) $1=$(cd $$2 && pwd -W) ;;
+        *) ;;
+      esac
+      ;;
+    cygwin*)
+      case $host_os in
+        mingw*) $1=$(cygpath -w -m $$2) ;;
+        *) ;;
+      esac
+      ;;
+  esac
+AC_SUBST([$1])
+])
+
+AC_MSG_CHECKING(absolute host location of prefix)
+ABS_PATH_HOST([prefix_b2h],[prefix])
+AC_MSG_RESULT([$prefix_b2h])
+
+AC_MSG_CHECKING(absolute host location of srcdir)
+ABS_PATH_HOST([srcdir_b2h],[srcdir])
+AC_MSG_RESULT([$srcdir_b2h])
+
+AC_MSG_CHECKING(absolute host location of abs_srcdir)
+ABS_PATH_HOST([abs_srcdir_b2h],[srcdir])
+AC_MSG_RESULT([$abs_srcdir_b2h])
+
+my_builddir=.
+AC_MSG_CHECKING(Absolute host location of abs_builddir)
+ABS_PATH_HOST([abs_builddir_b2h],[my_builddir])
+AC_MSG_RESULT([$abs_builddir_b2h])
+
+AC_MSG_CHECKING([for init system calls])
+AC_SUBST(INITSYS)
+case $host in
+  *-*-mingw*)	INITSYS=nt;;
+  *)		INITSYS=posix;;
+esac
+AC_MSG_RESULT([$INITSYS])
 
 # Record the configure-time value of MACOSX_DEPLOYMENT_TARGET,
 # it may influence the way we can build extensions, so distutils
@@ -1218,6 +1294,28 @@ AC_CACHE_CHECK([for -Wl,--no-as-needed], [ac_cv_wl_no_as_needed], [
 ])
 AC_SUBST([NO_AS_NEEDED])
 
+# initialize default configuration
+py_config=
+case $host in
+  *-*-mingw*) py_config=mingw ;;
+esac
+if test -n "$py_config" ; then
+  AC_MSG_NOTICE([loading configure defaults from .../Misc/config_$py_config"])
+  . "$srcdir/Misc/config_$py_config"
+fi
+
+# initialize defaults for cross-builds
+if test "$cross_compiling" = yes; then
+  py_config=$host_os
+  case $py_config in
+    mingw32*) py_config=mingw32 ;;
+  esac
+  if test -f "$srcdir/Misc/cross_$py_config" ; then
+    AC_MSG_NOTICE([loading cross defaults from .../Misc/cross_$py_config"])
+    . "$srcdir/Misc/cross_$py_config"
+  fi
+fi
+
 AC_MSG_CHECKING([for the Android API level])
 cat > conftest.c <<EOF
 #ifdef __ANDROID__
@@ -1334,6 +1432,7 @@ AC_ARG_WITH([suffix],
     [Emscripten/browser*], [EXEEXT=.js],
     [Emscripten/node*], [EXEEXT=.js],
     [WASI/*], [EXEEXT=.wasm],
+    [MINGW*], [EXEEXT=.exe],
     [EXEEXT=]
   )
 ])
@@ -1359,6 +1458,10 @@ else
 	BUILDEXEEXT=$EXEEXT
 fi
 rmdir CaseSensitiveTestDir
+
+AS_CASE([$ac_sys_system],
+  [MINGW], [BUILDEXEEXT=".exe"]
+)
 
 case $ac_sys_system in
 hp*|HP*)
@@ -1547,6 +1650,11 @@ if test $enable_shared = "yes"; then
       BLDLIBRARY='-L. -lpython$(LDVERSION)'
       DLLLIBRARY='libpython$(LDVERSION).dll'
       ;;
+    MINGW*)
+      LDLIBRARY='libpython$(LDVERSION).dll.a'
+      DLLLIBRARY='libpython$(LDVERSION).dll'
+      BLDLIBRARY='-L. -lpython$(LDVERSION)'
+      ;;
     SunOS*)
       LDLIBRARY='libpython$(LDVERSION).so'
       BLDLIBRARY='-Wl,-R,$(LIBDIR) -L. -lpython$(LDVERSION)'
@@ -1605,6 +1713,9 @@ else # shared is disabled
     CYGWIN*)
       BLDLIBRARY='$(LIBRARY)'
       LDLIBRARY='libpython$(LDVERSION).dll.a'
+      ;;
+    MINGW*)
+      LDLIBRARY='libpython$(LDVERSION).a'
       ;;
   esac
 fi
@@ -1697,6 +1808,10 @@ AC_SUBST([LINK_PYTHON_OBJS])
 # ar program
 AC_SUBST([AR])
 AC_CHECK_TOOLS([AR], [ar aal], [ar])
+
+# windres program
+AC_SUBST(WINDRES)
+AC_CHECK_TOOL(WINDRES, windres)
 
 # tweak ARFLAGS only if the user didn't set it on the command line
 AC_SUBST([ARFLAGS])
@@ -2503,6 +2618,14 @@ case $GCC in
 yes)
     CFLAGS_NODIST="$CFLAGS_NODIST -std=c11"
 
+    # GCC 14 and later error out with incompatible-pointer-types
+    # this only occues on mingw
+    case $host in
+    *-*-mingw*)
+        CFLAGS_NODIST="$CFLAGS_NODIST -Wno-error=incompatible-pointer-types"
+      ;;
+    esac
+
     PY_CHECK_CC_WARNING([enable], [extra], [if we can add -Wextra])
     AS_VAR_IF([ac_cv_enable_extra_warning], [yes],
               [CFLAGS_NODIST="$CFLAGS_NODIST -Wextra"])
@@ -2811,6 +2934,53 @@ then
 	BASECFLAGS="$BASECFLAGS $ac_arch_flags"
 fi
 
+dnl NOTE:
+dnl - GCC 4.4+ for mingw* require and use posix threads(pthreads-w32)
+dnl - Host may contain installed pthreads-w32.
+dnl - On windows platform only NT-thread model is supported. 
+dnl To avoid miss detection scipt first will check for NT-thread model
+dnl and if is not found will try to detect build options for pthread
+dnl model. Autodetection could be overiden if variable with_nt_threads
+dnl is set in "Site Configuration" (see autoconf manual).
+dnl If NT-thread model is enabled script skips some checks that
+dnl impact build process. When a new functionality is added, developers
+dnl are responsible to update configure script to avoid thread models
+dnl to be mixed.
+
+AC_MSG_CHECKING([for --with-nt-threads])
+AC_ARG_WITH(nt-threads,
+            AS_HELP_STRING([--with-nt-threads], [build with windows threads (default is system-dependent)]),
+[
+	case $withval in
+	no)	with_nt_threads=no;;
+	yes)	with_nt_threads=yes;;
+	*)	with_nt_threads=yes;;
+	esac
+], [
+	case $host in
+		*-*-mingw*) with_nt_threads=yes;;
+		*) with_nt_threads=no;;
+	esac
+])
+AC_MSG_RESULT([$with_nt_threads])
+
+if test $with_nt_threads = yes ; then
+AC_MSG_CHECKING([whether linking with nt-threads work])
+AC_LINK_IFELSE([
+    AC_LANG_PROGRAM([[#include <process.h>]],[[_beginthread(0, 0, 0);]])
+  ],
+  [AC_MSG_RESULT([yes])],
+  [AC_MSG_ERROR([failed to link with nt-threads])])
+fi
+
+if test $with_nt_threads = yes ; then
+  dnl temporary default flag to avoid additional pthread checks
+  dnl and initilize other ac..thread flags to no
+  ac_cv_pthread_is_default=no
+  ac_cv_kthread=no
+  ac_cv_pthread=no
+  dnl ac_cv_kpthread is set to no if default is yes (see below)
+else
 # On some compilers, pthreads are available without further options
 # (e.g. MacOS X). On some of these systems, the compiler will not
 # complain if unaccepted options are passed (e.g. gcc on Mac OS X).
@@ -2922,6 +3092,8 @@ int main(void){
 CC="$ac_save_cc"])
 fi
 
+fi
+
 # If we have set a CC compiler flag for thread support then
 # check if it works for CXX, too.
 if test ! -z "$CXX"
@@ -2941,6 +3113,10 @@ elif test "$ac_cv_pthread" = "yes"
 then
   CXX="$CXX -pthread"
   ac_cv_cxx_thread=yes
+elif test "$with_nt_threads" = "yes"
+then
+  dnl set to always to skip extra pthread check below
+  ac_cv_cxx_thread=always
 else
   ac_cv_cxx_thread=no
 fi
@@ -2979,11 +3155,11 @@ AC_DEFINE([STDC_HEADERS], [1],
 
 # checks for header files
 AC_CHECK_HEADERS([ \
-  alloca.h asm/types.h bluetooth.h conio.h direct.h dlfcn.h endian.h errno.h fcntl.h grp.h \
+  alloca.h asm/types.h bluetooth.h conio.h direct.h endian.h errno.h fcntl.h grp.h \
   io.h langinfo.h libintl.h libutil.h linux/auxvec.h sys/auxv.h linux/fs.h linux/limits.h linux/memfd.h \
   linux/random.h linux/soundcard.h \
-  linux/tipc.h linux/wait.h netdb.h net/ethernet.h netinet/in.h netpacket/packet.h poll.h process.h pthread.h pty.h \
-  sched.h setjmp.h shadow.h signal.h spawn.h stropts.h sys/audioio.h sys/bsdtty.h sys/devpoll.h \
+  linux/tipc.h linux/wait.h netdb.h net/ethernet.h netinet/in.h netpacket/packet.h poll.h process.h pty.h \
+  setjmp.h shadow.h signal.h spawn.h stropts.h sys/audioio.h sys/bsdtty.h sys/devpoll.h \
   sys/endian.h sys/epoll.h sys/event.h sys/eventfd.h sys/file.h sys/ioctl.h sys/kern_control.h \
   sys/loadavg.h sys/lock.h sys/memfd.h sys/mkdev.h sys/mman.h sys/modem.h sys/param.h sys/poll.h \
   sys/random.h sys/resource.h sys/select.h sys/sendfile.h sys/socket.h sys/soundcard.h sys/stat.h \
@@ -2991,8 +3167,23 @@ AC_CHECK_HEADERS([ \
   sys/types.h sys/uio.h sys/un.h sys/utsname.h sys/wait.h sys/xattr.h sysexits.h syslog.h \
   termios.h util.h utime.h utmp.h \
 ])
+
+case $host in
+  *-*-mingw*) ;;
+  *) AC_CHECK_HEADERS([dlfcn.h]);;
+esac
+
+
 AC_HEADER_DIRENT
 AC_HEADER_MAJOR
+
+# If using nt threads, don't look for pthread.h or thread.h
+if test "x$with_nt_threads" = xno ; then
+AC_HEADER_STDC
+AC_CHECK_HEADERS(pthread.h sched.h thread.h)
+AC_HEADER_DIRENT
+AC_HEADER_MAJOR
+fi
 
 # bluetooth/bluetooth.h has been known to not compile with -std=c99.
 # http://permalink.gmane.org/gmane.linux.bluez.kernel/22294
@@ -3145,9 +3336,16 @@ AC_CHECK_SIZEOF([double], [8])
 AC_CHECK_SIZEOF([fpos_t], [4])
 AC_CHECK_SIZEOF([size_t], [4])
 AC_CHECK_ALIGNOF([size_t])
-AC_CHECK_SIZEOF([pid_t], [4])
 AC_CHECK_SIZEOF([uintptr_t])
 AC_CHECK_ALIGNOF([max_align_t])
+
+case $host_os in
+  mingw*) ;;
+  *)
+    AC_CHECK_SIZEOF([pid_t], [4])
+    ;;
+esac
+
 
 AC_TYPE_LONG_DOUBLE
 AC_CHECK_SIZEOF([long double], [16])
@@ -3170,6 +3368,10 @@ fi
 dnl LFS does not work with Emscripten 3.1
 AS_CASE([$ac_sys_system],
   [Emscripten], [have_largefile_support="no"]
+)
+dnl Activate on windows platforms (32&64-bit) where off_t(4) < fpos_t(8)
+AS_CASE([$ac_sys_system],
+  [MINGW], [have_largefile_support="yes"]
 )
 AS_VAR_IF([have_largefile_support], [yes], [
   AC_DEFINE([HAVE_LARGEFILE_SUPPORT], [1],
@@ -3201,6 +3403,10 @@ elif test "$ac_cv_pthread" = "yes"
 then CC="$CC -pthread"
 fi
 
+if test $with_nt_threads = yes ; then
+  dnl skip check for pthread_t if NT-thread model is enabled
+  ac_cv_have_pthread_t=skip
+else
 AC_CACHE_CHECK([for pthread_t], [ac_cv_have_pthread_t], [
 AC_COMPILE_IFELSE([
   AC_LANG_PROGRAM([[@%:@include <pthread.h>]], [[pthread_t x; x = *(pthread_t*)0;]])
@@ -3232,7 +3438,7 @@ AS_VAR_IF([ac_cv_pthread_key_t_is_arithmetic_type], [yes], [
     AC_DEFINE([PTHREAD_KEY_T_IS_COMPATIBLE_WITH_INT], [1],
               [Define if pthread_key_t is compatible with int.])
 ])
-
+fi
 CC="$ac_save_cc"
 
 AC_MSG_CHECKING([for --enable-framework])
@@ -3387,6 +3593,9 @@ if test -z "$SHLIB_SUFFIX"; then
 	CYGWIN*)   SHLIB_SUFFIX=.dll;;
 	*)	   SHLIB_SUFFIX=.so;;
 	esac
+	case $host_os in
+	mingw*)    SHLIB_SUFFIX=.pyd;;
+	esac
 fi
 AC_MSG_RESULT([$SHLIB_SUFFIX])
 
@@ -3521,6 +3730,10 @@ then
 	CYGWIN*)
 		LDSHARED="gcc -shared -Wl,--enable-auto-image-base"
 		LDCXXSHARED="g++ -shared -Wl,--enable-auto-image-base";;
+  MINGW*)
+    LDSHARED='$(CC) -shared -Wl,--enable-auto-image-base'
+    LDCXXSHARED='$(CXX) -shared -Wl,--enable-auto-image-base'
+    ;;
 	*)	LDSHARED="ld";;
 	esac
 fi
@@ -3647,6 +3860,11 @@ then
 	VxWorks*)
 		LINKFORSHARED='-Wl,-export-dynamic';;
 	esac
+	case $host in
+	*-*-mingw*)
+		# for https://bugs.python.org/issue40458 on MINGW
+		LINKFORSHARED="-Wl,--stack,4194304";;
+	esac
 fi
 AC_MSG_RESULT([$LINKFORSHARED])
 
@@ -3711,7 +3929,12 @@ AC_SUBST([PERF_TRAMPOLINE_OBJ])
 
 # checks for libraries
 AC_CHECK_LIB([sendfile], [sendfile])
-AC_CHECK_LIB([dl], [dlopen])       # Dynamic linking for SunOS/Solaris and SYSV
+
+case $host in
+  *-*-mingw*) ;;
+  *) AC_CHECK_LIB([dl], [dlopen]) ;;	# Dynamic linking for SunOS/Solaris and SYSV
+esac
+
 AC_CHECK_LIB([dld], [shl_load])    # Dynamic linking for HP-UX
 
 
@@ -3772,16 +3995,30 @@ AS_VAR_IF([have_uuid], [missing], [
 
 AS_VAR_IF([have_uuid], [missing], [have_uuid=no])
 
+if test $with_nt_threads = yes ; then
+  dnl do not search for sem_init if NT-thread model is enabled
+  :
+else
 # 'Real Time' functions on Solaris
 # posix4 on Solaris 2.6
 # pthread (first!) on Linux
 AC_SEARCH_LIBS([sem_init], [pthread rt posix4])
+fi
 
 # check if we need libintl for locale functions
+case $host in
+  *-*-mingw*)
+  dnl Native windows build don't use libintl (see _localemodule.c).
+  dnl Also we don't like setup.py to add "intl" library to the list
+  dnl when build _locale module.
+  ;;
+  *)
 AC_CHECK_LIB([intl], [textdomain],
 	[AC_DEFINE([WITH_LIBINTL], [1],
 	[Define to 1 if libintl is needed for locale functions.])
         LIBS="-lintl $LIBS"])
+  ;;
+esac
 
 # checks for system dependent C++ extensions support
 case "$ac_sys_system" in
@@ -4162,6 +4399,36 @@ AC_SUBST([LIBMPDEC_CFLAGS])
 AC_SUBST([LIBMPDEC_INTERNAL])
 
 
+dnl On MINGW, you need to link against ws2_32 and iphlpapi for sockets to work
+AS_CASE([$MACHDEP],
+  [win32], [SOCKET_LIBS="-lws2_32 -liphlpapi -lrpcrt4"],
+  [SOCKET_LIBS=""]
+)
+
+dnl On MINGW, you need to link againt ws2_32 for _multiprocessing
+AS_CASE([$MACHDEP],
+  [win32], [MULTIPROCESSING_LIBS="-lws2_32"],
+  [MULTIPROCESSING_LIBS=""]
+)
+
+dnl On MINGW, you need to link againt ws2_32 for selectmodule
+AS_CASE([$MACHDEP],
+  [win32], [SELECTMODULE_LIBS="-lws2_32"],
+  [SELECTMODULE_LIBS=""]
+)
+
+dnl On MINGW, you need to link againt ole32, oleaut32 and uuid for ctypes
+AS_CASE([$MACHDEP],
+  [win32], [CTYPES_LIBS="-lole32 -loleaut32 -luuid"],
+  [CTYPES_LIBS=""]
+)
+
+dnl On MINGW, you need to link againt rpcrt4 for _uuid
+AS_CASE([$MACHDEP],
+  [win32], [UUID_LIBS="-lrpcrt4"],
+  [UUID_LIBS=""]
+)
+
 dnl detect sqlite3 from Emscripten emport
 PY_CHECK_EMSCRIPTEN_PORT([LIBSQLITE3], [-sUSE_SQLITE3])
 
@@ -4476,6 +4743,18 @@ done
 IFS=$as_save_IFS
 AC_MSG_RESULT([$DBM_CFLAGS $DBM_LIBS])
 
+case $host in
+  *-*-mingw*)
+    CFLAGS_NODIST="$CFLAGS_NODIST -D_WIN32_WINNT=0x0602";;
+esac
+
+# Determine if windows modules should be used.
+AC_SUBST(USE_WIN32_MODULE)
+USE_WIN32_MODULE='#'
+case $host in
+  *-*-mingw*) USE_WIN32_MODULE=;;
+esac
+
 # Templates for things AC_DEFINEd more than once.
 # For a single AC_DEFINE, no template is needed.
 AH_TEMPLATE([_REENTRANT],
@@ -4510,6 +4789,11 @@ then
         CXX="$CXX -pthread"
     fi
     posix_threads=yes
+elif test $with_nt_threads = yes
+then
+    posix_threads=no
+    AC_DEFINE(NT_THREADS, 1,
+        [Define to 1 if you want to use native NT threads])
 else
     if test ! -z "$withval" -a -d "$withval"
     then LDFLAGS="$LDFLAGS -L$withval"
@@ -4931,11 +5215,14 @@ AC_MSG_RESULT([$with_freelists])
 AC_MSG_CHECKING([for --with-c-locale-coercion])
 AC_ARG_WITH(
   [c-locale-coercion],
-  [AS_HELP_STRING([--with-c-locale-coercion], [enable C locale coercion to a UTF-8 based locale (default is yes)])])
+  [AS_HELP_STRING([--with-c-locale-coercion], [enable C locale coercion to a UTF-8 based locale (default is yes on Unix, no on Windows)])])
 
 if test -z "$with_c_locale_coercion"
 then
-    with_c_locale_coercion="yes"
+    case $host in
+      *-*-mingw*) with_c_locale_coercion="no";;
+      *) with_c_locale_coercion="yes";;
+    esac
 fi
 if test "$with_c_locale_coercion" != "no"
 then
@@ -5040,12 +5327,36 @@ then
 	fi
 	;;
 	esac
+	case $host in
+	*-*-mingw*)
+    DYNLOADFILE="dynload_win.o"
+    extra_machdep_objs="$extra_machdep_objs PC/dl_nt.o"
+    CFLAGS_NODIST="$CFLAGS_NODIST -DPY3_DLLNAME='L\"$DLLLIBRARY\"'"
+    case $host in
+        i686*)
+                CFLAGS_NODIST="$CFLAGS_NODIST -DMS_DLL_ID='\"${VERSION}-32\"'"
+            ;;
+        armv7*)
+                CFLAGS_NODIST="$CFLAGS_NODIST -DMS_DLL_ID='\"${VERSION}-arm32\"'"
+            ;;
+        aarch64*)
+                CFLAGS_NODIST="$CFLAGS_NODIST -DMS_DLL_ID='\"${VERSION}-arm64\"'"
+            ;;
+            *)
+                CFLAGS_NODIST="$CFLAGS_NODIST -DMS_DLL_ID='\"$VERSION\"'"
+            ;;
+      esac
+    ;;
+	esac
 fi
 AC_MSG_RESULT([$DYNLOADFILE])
 if test "$DYNLOADFILE" != "dynload_stub.o"
 then
+  have_dynamic_loading=yes
 	AC_DEFINE([HAVE_DYNAMIC_LOADING], [1],
         [Defined when any dynamic module loading is enabled.])
+else
+  have_dynamic_loading=no
 fi
 
 # MACHDEP_OBJS can be set to platform-specific object files needed by Python
@@ -5089,13 +5400,22 @@ if test "$ac_sys_system" = "Linux-android"; then
 fi
 
 # checks for library functions
+if test $with_nt_threads = yes ; then
+  dnl GCC(mingw) 4.4+ require and use posix threads(pthreads-w32)
+  dnl and host may contain installed pthreads-w32.
+  dnl Skip checks for some functions declared in pthreads-w32 if
+  dnl NT-thread model is enabled.
+  ac_cv_func_pthread_kill=skip
+  ac_cv_func_sem_open=skip
+  ac_cv_func_sched_setscheduler=skip
+fi
 AC_CHECK_FUNCS([ \
   accept4 alarm bind_textdomain_codeset chmod chown clock closefrom close_range confstr \
   copy_file_range ctermid dup dup3 execv explicit_bzero explicit_memset \
   faccessat fchmod fchmodat fchown fchownat fdopendir fdwalk fexecve \
   fork fork1 fpathconf fstatat ftime ftruncate futimens futimes futimesat \
   gai_strerror getegid geteuid getgid getgrent getgrgid getgrgid_r \
-  getgrnam_r getgrouplist gethostname getitimer getloadavg getlogin \
+  getgrnam_r getgrouplist getitimer getloadavg getlogin \
   getpeername getpgid getpid getppid getpriority _getpty \
   getpwent getpwnam_r getpwuid getpwuid_r getresgid getresuid getrusage getsid getspent \
   getspnam getuid getwd grantpt if_nameindex initgroups kill killpg lchown linkat \
@@ -5109,7 +5429,7 @@ AC_CHECK_FUNCS([ \
   sched_setparam sched_setscheduler sem_clockwait sem_getvalue sem_open \
   sem_timedwait sem_unlink sendfile setegid seteuid setgid sethostname \
   setitimer setlocale setpgid setpgrp setpriority setregid setresgid \
-  setresuid setreuid setsid setuid setvbuf shutdown sigaction sigaltstack \
+  setresuid setreuid setsid setuid setvbuf sigaction sigaltstack \
   sigfillset siginterrupt sigpending sigrelse sigtimedwait sigwait \
   sigwaitinfo snprintf splice strftime strlcpy strsignal symlinkat sync \
   sysconf tcgetpgrp tcsetpgrp tempnam timegm times tmpfile \
@@ -5338,7 +5658,13 @@ PKG_CHECK_MODULES([LIBLZMA], [liblzma], [have_liblzma=yes], [
 ])
 
 dnl PY_CHECK_NETDB_FUNC(FUNCTION)
-AC_DEFUN([PY_CHECK_NETDB_FUNC], [PY_CHECK_FUNC([$1], [@%:@include <netdb.h>])])
+AC_DEFUN([PY_CHECK_NETDB_FUNC], [PY_CHECK_FUNC([$1], [
+#ifdef _WIN32
+  #include <winsock.h>
+#else
+  #include <netdb.h>
+#endif
+])])
 
 PY_CHECK_NETDB_FUNC([hstrerror])
 dnl not available in WASI yet
@@ -5347,13 +5673,19 @@ PY_CHECK_NETDB_FUNC([getservbyport])
 PY_CHECK_NETDB_FUNC([gethostbyname])
 PY_CHECK_NETDB_FUNC([gethostbyaddr])
 PY_CHECK_NETDB_FUNC([getprotobyname])
+PY_CHECK_NETDB_FUNC([gethostname])
+PY_CHECK_NETDB_FUNC([shutdown])
 
 dnl PY_CHECK_SOCKET_FUNC(FUNCTION)
 AC_DEFUN([PY_CHECK_SOCKET_FUNC], [PY_CHECK_FUNC([$1], [
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#endif
 ])])
 
 PY_CHECK_SOCKET_FUNC([inet_aton])
@@ -5417,6 +5749,9 @@ AC_CHECK_FUNCS([setpgrp],
 # check for namespace functions
 AC_CHECK_FUNCS([setns unshare])
 
+case $host in
+  *-*-mingw*) ;;
+  *)
 AC_CHECK_FUNCS([clock_gettime], [], [
     AC_CHECK_LIB([rt], [clock_gettime], [
         LIBS="$LIBS -lrt"
@@ -5454,6 +5789,9 @@ if ! { test "$ac_sys_system" = "Linux-android" &&
       ])
   ])
 fi
+
+  ;;
+esac
 
 AC_CHECK_FUNCS([nanosleep], [], [
     AC_CHECK_LIB([rt], [nanosleep], [
@@ -5645,18 +5983,33 @@ if test $ac_cv_header_time_altzone = yes; then
     [Define this if your time.h defines altzone.])
 fi
 
+AC_CHECK_HEADERS([ws2tcpip.h])
 AC_CACHE_CHECK([for addrinfo], [ac_cv_struct_addrinfo],
-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[@%:@include <netdb.h>]], [[struct addrinfo a]])],
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+#ifdef HAVE_WS2TCPIP_H
+#  include <ws2tcpip.h>
+#else
+#  include <netdb.h>
+#endif]],
+    [[struct addrinfo a]])],
   [ac_cv_struct_addrinfo=yes],
   [ac_cv_struct_addrinfo=no]))
 if test $ac_cv_struct_addrinfo = yes; then
-	AC_DEFINE([HAVE_ADDRINFO], [1], [struct addrinfo (netdb.h)])
+	AC_DEFINE([HAVE_ADDRINFO], [1], [struct addrinfo])
 fi
 
 AC_CACHE_CHECK([for sockaddr_storage], [ac_cv_struct_sockaddr_storage],
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
-#		include <sys/types.h>
-@%:@		include <sys/socket.h>]], [[struct sockaddr_storage s]])],
+#ifdef HAVE_WS2TCPIP_H
+#include <ws2tcpip.h>
+#endif
+#ifdef HAVE_SYS_TYPES_H
+#include <sys/types.h>
+#endif
+#ifdef HAVE_SYS_SOCKET_H
+#include <sys/socket.h>
+#endif]],
+    [[struct sockaddr_storage s]])],
   [ac_cv_struct_sockaddr_storage=yes],
   [ac_cv_struct_sockaddr_storage=no]))
 if test $ac_cv_struct_sockaddr_storage = yes; then
@@ -5970,6 +6323,10 @@ dnl actually works.  For FreeBSD versions <= 7.2,
 dnl the kernel module that provides POSIX semaphores
 dnl isn't loaded by default, so an attempt to call
 dnl sem_open results in a 'Signal 12' error.
+if test $with_nt_threads = yes ; then
+  dnl skip posix semaphores test if NT-thread model is enabled
+  ac_cv_posix_semaphores_enabled=no
+fi
 AC_CACHE_CHECK([whether POSIX semaphores are enabled], [ac_cv_posix_semaphores_enabled],
   AC_RUN_IFELSE([
     AC_LANG_SOURCE([
@@ -6003,6 +6360,14 @@ AS_VAR_IF([ac_cv_posix_semaphores_enabled], [no], [
 ])
 
 dnl Multiprocessing check for broken sem_getvalue
+if test $with_nt_threads = yes ; then
+  dnl Skip test if NT-thread model is enabled.
+  dnl NOTE the test case below fail for pthreads-w32 as:
+  dnl - SEM_FAILED is not defined;
+  dnl - sem_open is a stub;
+  dnl - sem_getvalue work(!).
+  ac_cv_broken_sem_getvalue=skip
+fi
 AC_CACHE_CHECK([for broken sem_getvalue], [ac_cv_broken_sem_getvalue],
   AC_RUN_IFELSE([
     AC_LANG_SOURCE([
@@ -6039,7 +6404,10 @@ AS_VAR_IF([ac_cv_broken_sem_getvalue], [yes], [
   )
 ])
 
-AC_CHECK_DECLS([RTLD_LAZY, RTLD_NOW, RTLD_GLOBAL, RTLD_LOCAL, RTLD_NODELETE, RTLD_NOLOAD, RTLD_DEEPBIND, RTLD_MEMBER], [], [], [[@%:@include <dlfcn.h>]])
+case $host in
+  *-*-mingw*) ;;
+  *) AC_CHECK_DECLS([RTLD_LAZY, RTLD_NOW, RTLD_GLOBAL, RTLD_LOCAL, RTLD_NODELETE, RTLD_NOLOAD, RTLD_DEEPBIND, RTLD_MEMBER], [], [], [[@%:@include <dlfcn.h>]])
+esac
 
 # determine what size digit to use for Python's longs
 AC_MSG_CHECKING([digit size for Python's longs])
@@ -6129,6 +6497,61 @@ esac
 # check for endianness
 AC_C_BIGENDIAN
 
+AC_SUBST(PYD_PLATFORM_TAG)
+# Special case of PYD_PLATFORM_TAG with python build with mingw. 
+# Python can with different cpu arch and c runtime as well as different
+# toolchain. We follow this`mingw_<cpu_arch>_<c_runtime>_<toolchain>`
+# convention for PYD_PLATFORM_TAG. Where:
+# `cpu_arch` = `x86_64`, `aarch64` or `i686`
+# `c_runtime` = `msvcrt` or `ucrt`
+# `toolchain` = `gnu` or `llvm`
+PYD_PLATFORM_TAG=""
+case $host in
+  *-*-mingw*)
+    # check if we are linking to ucrt
+    AC_MSG_CHECKING(whether linking to ucrt)
+    AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
+    #include <stdio.h>
+    #ifndef _UCRT
+        #error no ucrt
+    #endif
+    int main(){ return 0; }
+    ]])],[linking_to_ucrt=yes],[linking_to_ucrt=no])
+    AC_MSG_RESULT($linking_to_ucrt)
+    ;;
+esac
+case $host_os in
+    mingw*)
+  AC_MSG_CHECKING(PYD_PLATFORM_TAG)
+  PYD_PLATFORM_TAG="mingw"
+  case $host in
+  i686-*-mingw*)
+    PYD_PLATFORM_TAG+="_i686"
+    ;;
+  x86_64-*-mingw*)
+    PYD_PLATFORM_TAG+="_x86_64"
+    ;;
+  aarch64-*-mingw*)
+    PYD_PLATFORM_TAG+="_aarch64"
+    ;;
+  armv7-*-mingw*)
+    PYD_PLATFORM_TAG+="_armv7"
+    ;;
+  esac
+  if test $linking_to_ucrt = no; then
+    PYD_PLATFORM_TAG+="_msvcrt"
+  else
+    PYD_PLATFORM_TAG+="_ucrt"
+  fi
+  if test -n "${cc_is_clang}"; then
+    # it is CLANG32
+    PYD_PLATFORM_TAG+="_llvm"
+  else
+    PYD_PLATFORM_TAG+="_gnu"
+  fi
+  AC_MSG_RESULT($PYD_PLATFORM_TAG)
+esac
+
 # ABI version string for Python extension modules.  This appears between the
 # periods in shared library file names, e.g. foo.<SOABI>.so.  It is calculated
 # from the following attributes which affect the ABI of this Python build (in
@@ -6163,7 +6586,12 @@ if test "$Py_DEBUG" = 'true'; then
 fi
 
 AC_SUBST([EXT_SUFFIX])
-EXT_SUFFIX=.${SOABI}${SHLIB_SUFFIX}
+VERSION_NO_DOTS=$(echo $LDVERSION | tr -d .)
+if test -n "${PYD_PLATFORM_TAG}"; then
+  EXT_SUFFIX=".cp${VERSION_NO_DOTS}-${PYD_PLATFORM_TAG}${SHLIB_SUFFIX}"
+else
+  EXT_SUFFIX=.${SOABI}${SHLIB_SUFFIX}
+fi
 
 AC_MSG_CHECKING([LDVERSION])
 LDVERSION='$(VERSION)$(ABIFLAGS)'
@@ -6178,8 +6606,8 @@ AC_SUBST([LIBPYTHON])
 MODULE_DEPS_SHARED='$(MODULE_DEPS_STATIC) $(EXPORTSYMS)'
 LIBPYTHON=''
 
-# On Android and Cygwin the shared libraries must be linked with libpython.
-if test "$PY_ENABLE_SHARED" = "1" && ( test -n "$ANDROID_API_LEVEL" || test "$MACHDEP" = "cygwin"); then
+# On Android, Cygwin and MINGW the shared libraries must be linked with libpython.
+if test "$PY_ENABLE_SHARED" = "1" && ( test -n "$ANDROID_API_LEVEL" || test "$MACHDEP" = "cygwin"|| test "$MACHDEP" = "win32"); then
   MODULE_DEPS_SHARED="$MODULE_DEPS_SHARED \$(LDLIBRARY)"
   LIBPYTHON="\$(BLDLIBRARY)"
 fi
@@ -6829,7 +7257,10 @@ fi
 
 AC_CHECK_TYPES([socklen_t], [],
                [AC_DEFINE([socklen_t], [int],
-                          [Define to 'int' if <sys/socket.h> does not define.])], [
+                          [Define to 'int' if <sys/socket.h> or <ws2tcpip.h>  does not define.])], [
+#ifdef HAVE_WS2TCPIP_H
+#include <ws2tcpip.h>
+#endif
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
 #endif
@@ -6923,6 +7354,27 @@ do
   THREADHEADERS="$THREADHEADERS \$(srcdir)/$h"
 done
 
+case $host in
+  *-*-mingw*)
+    dnl Required for windows builds as Objects/exceptions.c require
+    dnl "errmap.h" from $srcdir/PC.
+    dnl Note we cannot use BASECPPFLAGS as autogenerated pyconfig.h
+    dnl has to be before customized located in ../PC.
+    dnl (-I. at end is workaround for setup.py logic)
+    CPPFLAGS="-I\$(srcdir)/PC $CPPFLAGS -I."
+    ;;
+esac
+
+dnl Python interpreter main program for frozen scripts
+AC_SUBST(PYTHON_OBJS_FROZENMAIN)
+PYTHON_OBJS_FROZENMAIN="Python/frozenmain.o"
+case $host in
+  *-*-mingw*)
+    dnl 'PC/frozen_dllmain.c' - not yet
+    PYTHON_OBJS_FROZENMAIN=
+    ;;
+esac
+
 AC_SUBST([SRCDIRS])
 SRCDIRS="\
   Modules \
@@ -6950,6 +7402,11 @@ SRCDIRS="\
   Programs \
   Python \
   Python/frozen_modules"
+
+case $host in
+  *-*-mingw*) SRCDIRS="$SRCDIRS PC";;
+esac
+
 AC_MSG_CHECKING([for build directories])
 for dir in $SRCDIRS; do
     if test ! -d $dir; then
@@ -6957,6 +7414,38 @@ for dir in $SRCDIRS; do
     fi
 done
 AC_MSG_RESULT([done])
+
+# For mingw build need additional library for linking
+case $host in
+  *-*-mingw*)
+    LIBS="$LIBS -lversion -lshlwapi -lpathcch -lbcrypt"
+    AC_PROG_AWK
+    if test "$AWK" = "gawk"; then
+      awk_extra_flag="--non-decimal-data"
+    fi
+    AC_MSG_CHECKING([FIELD3])
+    FIELD3=$($AWK $awk_extra_flag '\
+      /^#define PY_RELEASE_LEVEL_/             {levels[$2]=$3}    \
+      /^#define PY_MICRO_VERSION[[:space:]]+/  {micro=$3}         \
+      /^#define PY_RELEASE_LEVEL[[:space:]]+/  {level=levels[$3]} \
+      /^#define PY_RELEASE_SERIAL[[:space:]]+/ {serial=$3}        \
+      END {print micro * 1000 + level * 10 + serial}' \
+      $srcdir/Include/patchlevel.h
+    )
+    
+    AC_MSG_RESULT([${FIELD3}])
+    RCFLAGS="$RCFLAGS -DFIELD3=$FIELD3 -O COFF"
+
+    case $host in
+      i686*)  RCFLAGS="$RCFLAGS --target=pe-i386" ;;
+      x86_64*)  RCFLAGS="$RCFLAGS --target=pe-x86-64" ;;
+      *) ;;
+    esac
+  ;;
+  *)
+  ;;
+esac
+AC_SUBST(RCFLAGS)
 
 # Availability of -O2:
 AC_CACHE_CHECK([for -O2], [ac_cv_compile_o2], [
@@ -7481,6 +7970,7 @@ AS_CASE([$ac_sys_system],
     )
   ],
   [CYGWIN*], [PY_STDLIB_MOD_SET_NA([_scproxy])],
+  [MINGW*], [PY_STDLIB_MOD_SET_NA([readline])],
   [QNX*], [PY_STDLIB_MOD_SET_NA([_scproxy])],
   [FreeBSD*], [PY_STDLIB_MOD_SET_NA([_scproxy])],
   [Emscripten|WASI], [
@@ -7618,10 +8108,9 @@ PY_STDLIB_MOD_SIMPLE([_json])
 PY_STDLIB_MOD_SIMPLE([_lsprof])
 PY_STDLIB_MOD_SIMPLE([_opcode])
 PY_STDLIB_MOD_SIMPLE([_pickle])
-PY_STDLIB_MOD_SIMPLE([_posixsubprocess])
 PY_STDLIB_MOD_SIMPLE([_queue])
 PY_STDLIB_MOD_SIMPLE([_random])
-PY_STDLIB_MOD_SIMPLE([select])
+PY_STDLIB_MOD_SIMPLE([select], [], [$SELECTMODULE_LIBS])
 PY_STDLIB_MOD_SIMPLE([_struct])
 PY_STDLIB_MOD_SIMPLE([_typing])
 PY_STDLIB_MOD_SIMPLE([_interpreters])
@@ -7631,8 +8120,8 @@ PY_STDLIB_MOD_SIMPLE([_zoneinfo])
 
 dnl multiprocessing modules
 PY_STDLIB_MOD([_multiprocessing],
-  [], [test "$ac_cv_func_sem_unlink" = "yes"],
-  [-I\$(srcdir)/Modules/_multiprocessing])
+  [], [test "$ac_cv_func_sem_unlink" = "yes" -o "$MACHDEP" = "win32"],
+  [-I\$(srcdir)/Modules/_multiprocessing], [$MULTIPROCESSING_LIBS])
 PY_STDLIB_MOD([_posixshmem],
   [], [test "$have_posix_shmem" = "yes"],
   [$POSIXSHMEM_CFLAGS], [$POSIXSHMEM_LIBS])
@@ -7650,11 +8139,15 @@ PY_STDLIB_MOD([fcntl],
   [], [test "$ac_cv_header_sys_ioctl_h" = "yes" -a "$ac_cv_header_fcntl_h" = "yes"],
   [], [$FCNTL_LIBS])
 PY_STDLIB_MOD([mmap],
-  [], [test "$ac_cv_header_sys_mman_h" = "yes" -a "$ac_cv_header_sys_stat_h" = "yes"])
+  [], m4_flatten([test "$ac_cv_header_sys_mman_h" = "yes"
+                    -a "$ac_cv_header_sys_stat_h" = "yes"
+                    -o "$MACHDEP" = "win32"]))
 PY_STDLIB_MOD([_socket],
   [], m4_flatten([test "$ac_cv_header_sys_socket_h" = "yes"
                     -a "$ac_cv_header_sys_types_h" = "yes"
-                    -a "$ac_cv_header_netinet_in_h" = "yes"]))
+                    -a "$ac_cv_header_netinet_in_h" = "yes"
+                    -o "$MACHDEP" = "win32"]),
+  [], [$SOCKET_LIBS])
 
 dnl platform specific extensions
 PY_STDLIB_MOD([grp], [],
@@ -7667,6 +8160,7 @@ PY_STDLIB_MOD([_scproxy],
   [], [-framework SystemConfiguration -framework CoreFoundation])
 PY_STDLIB_MOD([syslog], [], [test "$ac_cv_header_syslog_h" = yes])
 PY_STDLIB_MOD([termios], [], [test "$ac_cv_header_termios_h" = yes])
+PY_STDLIB_MOD([_posixsubprocess], [], [test "$MACHDEP" != "win32"])
 
 dnl _elementtree loads libexpat via CAPI hook in pyexpat
 PY_STDLIB_MOD([pyexpat],
@@ -7700,7 +8194,7 @@ PY_STDLIB_MOD([_blake2],
 
 PY_STDLIB_MOD([_ctypes],
   [], [test "$have_libffi" = yes],
-  [$NO_STRICT_OVERFLOW_CFLAGS $LIBFFI_CFLAGS], [$LIBFFI_LIBS])
+  [$NO_STRICT_OVERFLOW_CFLAGS $LIBFFI_CFLAGS], [$LIBFFI_LIBS $CTYPES_LIBS])
 PY_STDLIB_MOD([_curses],
   [], [test "$have_curses" = "yes"],
   [$CURSES_CFLAGS], [$CURSES_LIBS]
@@ -7729,8 +8223,8 @@ PY_STDLIB_MOD([_tkinter],
   [], [test "$have_tcltk" = "yes"],
   [$TCLTK_CFLAGS], [$TCLTK_LIBS])
 PY_STDLIB_MOD([_uuid],
-  [], [test "$have_uuid" = "yes"],
-  [$LIBUUID_CFLAGS], [$LIBUUID_LIBS])
+  [], [test "$have_uuid" = "yes" -o "$MACHDEP" = "win32"],
+  [$LIBUUID_CFLAGS], [$LIBUUID_LIBS $UUID_LIBS])
 
 dnl compression libs
 PY_STDLIB_MOD([zlib], [], [test "$have_zlib" = yes],
@@ -7744,9 +8238,17 @@ PY_STDLIB_MOD([_lzma], [], [test "$have_liblzma" = yes],
 
 dnl OpenSSL bindings
 PY_STDLIB_MOD([_ssl], [], [test "$ac_cv_working_openssl_ssl" = yes],
-  [$OPENSSL_INCLUDES], [$OPENSSL_LDFLAGS $OPENSSL_LDFLAGS_RPATH $OPENSSL_LIBS])
+  [$OPENSSL_INCLUDES], [$OPENSSL_LDFLAGS $OPENSSL_LDFLAGS_RPATH $OPENSSL_LIBS -lws2_32])
 PY_STDLIB_MOD([_hashlib], [], [test "$ac_cv_working_openssl_hashlib" = yes],
   [$OPENSSL_INCLUDES], [$OPENSSL_LDFLAGS $OPENSSL_LDFLAGS_RPATH $LIBCRYPTO_LIBS])
+
+dnl windows specific modules
+PY_STDLIB_MOD([msvcrt], [test "$MACHDEP" = "win32"])
+PY_STDLIB_MOD([_winapi], [test "$MACHDEP" = "win32"])
+PY_STDLIB_MOD([winsound], [test "$MACHDEP" = "win32"], [], [],
+  [-lwinmm])
+PY_STDLIB_MOD([_overlapped], [test "$MACHDEP" = "win32"], [], [],
+  [-lws2_32])
 
 dnl test modules
 PY_STDLIB_MOD([_testcapi],
@@ -7756,22 +8258,23 @@ PY_STDLIB_MOD([_testcapi],
 PY_STDLIB_MOD([_testclinic], [test "$TEST_MODULES" = yes])
 PY_STDLIB_MOD([_testclinic_limited], [test "$TEST_MODULES" = yes])
 PY_STDLIB_MOD([_testlimitedcapi], [test "$TEST_MODULES" = yes])
-PY_STDLIB_MOD([_testinternalcapi], [test "$TEST_MODULES" = yes])
+PY_STDLIB_MOD([_testinternalcapi], [test "$TEST_MODULES" = yes], [], [-DPY3_DLLNAME="\"$DLLLIBRARY\""], [])
 PY_STDLIB_MOD([_testbuffer], [test "$TEST_MODULES" = yes])
-PY_STDLIB_MOD([_testimportmultiple], [test "$TEST_MODULES" = yes], [test "$ac_cv_func_dlopen" = yes])
-PY_STDLIB_MOD([_testmultiphase], [test "$TEST_MODULES" = yes], [test "$ac_cv_func_dlopen" = yes])
-PY_STDLIB_MOD([_testsinglephase], [test "$TEST_MODULES" = yes], [test "$ac_cv_func_dlopen" = yes])
+PY_STDLIB_MOD([_testimportmultiple], [test "$TEST_MODULES" = yes], [test "$have_dynamic_loading" = yes])
+PY_STDLIB_MOD([_testmultiphase], [test "$TEST_MODULES" = yes], [test "$have_dynamic_loading" = yes])
+PY_STDLIB_MOD([_testsinglephase], [test "$TEST_MODULES" = yes], [test "$have_dynamic_loading" = yes])
 PY_STDLIB_MOD([_testexternalinspection], [test "$TEST_MODULES" = yes])
 PY_STDLIB_MOD([xxsubtype], [test "$TEST_MODULES" = yes])
 PY_STDLIB_MOD([_xxtestfuzz], [test "$TEST_MODULES" = yes])
+PY_STDLIB_MOD([_testconsole], [test "$TEST_MODULES" = yes -a "$MACHDEP" = "win32"])
 PY_STDLIB_MOD([_ctypes_test],
-  [test "$TEST_MODULES" = yes], [test "$have_libffi" = yes -a "$ac_cv_func_dlopen" = yes],
-  [], [$LIBM])
+  [test "$TEST_MODULES" = yes], [test "$have_libffi" = yes -a "$have_dynamic_loading" = yes],
+  [], [$LIBM $CTYPES_LIBS])
 
 dnl Limited API template modules.
 dnl Emscripten does not support shared libraries yet.
-PY_STDLIB_MOD([xxlimited], [test "$TEST_MODULES" = yes], [test "$ac_cv_func_dlopen" = yes])
-PY_STDLIB_MOD([xxlimited_35], [test "$TEST_MODULES" = yes], [test "$ac_cv_func_dlopen" = yes])
+PY_STDLIB_MOD([xxlimited], [test "$TEST_MODULES" = yes], [test "$have_dynamic_loading" = yes])
+PY_STDLIB_MOD([xxlimited_35], [test "$TEST_MODULES" = yes], [test "$have_dynamic_loading" = yes])
 
 # substitute multiline block, must come after last PY_STDLIB_MOD()
 AC_SUBST([MODULE_BLOCK])

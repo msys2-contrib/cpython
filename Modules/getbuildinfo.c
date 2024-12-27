@@ -41,7 +41,7 @@ static char buildinfo[50 + sizeof(GITVERSION) +
                       ((sizeof(GITTAG) > sizeof(GITBRANCH)) ?
                        sizeof(GITTAG) : sizeof(GITBRANCH))];
 
-const char *
+PyAPI_FUNC(const char *)
 Py_GetBuildInfo(void)
 {
     if (initialized) {

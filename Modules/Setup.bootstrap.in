@@ -8,8 +8,8 @@
 # module C APIs are used in core
 atexit atexitmodule.c
 faulthandler faulthandler.c
-posix posixmodule.c
-_signal signalmodule.c
+@INITSYS@ posixmodule.c
+_signal signalmodule.c -lws2_32
 _tracemalloc _tracemalloc.c
 _suggestions _suggestions.c
 
@@ -17,7 +17,7 @@ _suggestions _suggestions.c
 _codecs _codecsmodule.c
 _collections _collectionsmodule.c
 errno errnomodule.c
-_io _io/_iomodule.c _io/iobase.c _io/fileio.c _io/bytesio.c _io/bufferedio.c _io/textio.c _io/stringio.c
+_io _io/_iomodule.c _io/iobase.c _io/fileio.c _io/bytesio.c _io/bufferedio.c _io/textio.c _io/stringio.c _io/winconsoleio.c
 itertools itertoolsmodule.c
 _sre _sre/sre.c
 _sysconfig _sysconfig.c
@@ -36,3 +36,8 @@ _symtable symtablemodule.c
 
 # for systems without $HOME env, used by site._getuserbase()
 @MODULE_PWD_TRUE@pwd pwdmodule.c
+
+# build-in modules for windows platform:
+@USE_WIN32_MODULE@winreg ../PC/winreg.c
+@MODULE_MSVCRT_TRUE@msvcrt -DPy_BUILD_CORE ../PC/msvcrtmodule.c
+@MODULE__WINAPI_TRUE@_winapi _winapi.c
